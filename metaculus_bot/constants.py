@@ -318,6 +318,15 @@ GEMINI_SEARCH_DEFAULT_MODEL: str = "gemini-3-flash-preview"
 # Gap-fill runs overlapped with forecaster LLM calls, so higher timeout adds
 # zero wall-clock cost. Observed p99 of non-AFC calls ≈ 52s.
 GEMINI_SEARCH_TIMEOUT: int = 360
+# Max concurrent grounded-search calls against Google AI Studio. The gemini_search
+# provider plus the second-pass gap-fill can otherwise burst ~6 grounded calls at
+# once (1 provider + GAP_FILL_MAX_GAPS gaps), which the project's per-model
+# concurrency quota rejects as `503 UNAVAILABLE "high demand"` — confirmed
+# reproducible: single calls always succeed, 6-way bursts lose ~4. A process-wide
+# semaphore (see gemini_search._grounded_semaphore) caps in-flight calls so the
+# gap-fill runs in waves instead of one throttled burst. 2 is comfortably under
+# the observed throttle threshold; raise if the tier's quota increases.
+GEMINI_SEARCH_MAX_CONCURRENCY: int = 2
 
 # --- Second-pass gap-fill ---
 # After first-pass research completes, a cheap analyzer identifies up to

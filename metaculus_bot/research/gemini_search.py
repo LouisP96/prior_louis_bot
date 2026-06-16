@@ -21,6 +21,7 @@ from google.genai import types as genai_types
 
 from metaculus_bot.constants import (
     GEMINI_SEARCH_DEFAULT_MODEL,
+    GEMINI_SEARCH_MAX_CONCURRENCY,
     GEMINI_SEARCH_MODEL_ENV,
     GEMINI_SEARCH_TIMEOUT,
     GOOGLE_API_KEY_ENV,
@@ -35,6 +36,32 @@ __all__ = ["build_gemini_client", "gemini_search_provider", "invoke_gemini_groun
 # Header-only initializer for the sources list. Checking `len(sources_lines) > _SOURCES_HEADER_LEN`
 # against this named constant keeps the sources-present gate tied to the init block.
 _SOURCES_HEADER_LEN = 3
+
+# Process-wide cap on concurrent grounded-search calls. The provider + gap-fill
+# otherwise burst ~6 at once and trip Google's per-model concurrency quota
+# (surfaced as 503 "high demand"). Lazily created so it binds to the running
+# event loop rather than import-time. See GEMINI_SEARCH_MAX_CONCURRENCY.
+_grounded_semaphore: asyncio.Semaphore | None = None
+
+# Retry config for the 503 throttle. Single calls always succeed, so a couple of
+# short backed-off retries mop up any stragglers the semaphore doesn't fully
+# serialize away. Only 503/UNAVAILABLE is retried; other errors propagate.
+_GROUNDED_RETRY_ATTEMPTS = 3
+_GROUNDED_RETRY_BASE_DELAY = 4.0
+
+
+def _get_grounded_semaphore() -> asyncio.Semaphore:
+    """Return the process-wide grounded-call semaphore, creating it on first use."""
+    global _grounded_semaphore
+    if _grounded_semaphore is None:
+        _grounded_semaphore = asyncio.Semaphore(GEMINI_SEARCH_MAX_CONCURRENCY)
+    return _grounded_semaphore
+
+
+def _is_throttle_503(exc: Exception) -> bool:
+    """Whether an exception is Google's 503 UNAVAILABLE concurrency/demand throttle."""
+    msg = str(exc).lower()
+    return "503" in msg or "unavailable" in msg
 
 
 @functools.lru_cache(maxsize=1)
@@ -169,14 +196,32 @@ async def invoke_gemini_grounded(
     config = genai_types.GenerateContentConfig(tools=tools)
 
     logger.info(f"GeminiSearch: calling {model} with grounding")
-    try:
-        response = await asyncio.wait_for(
-            client.aio.models.generate_content(model=model, contents=prompt, config=config),
-            timeout=GEMINI_SEARCH_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        logger.warning(f"GeminiSearch: {model} timed out after {GEMINI_SEARCH_TIMEOUT}s")
-        raise
+    semaphore = _get_grounded_semaphore()
+    response = None
+    for attempt in range(1, _GROUNDED_RETRY_ATTEMPTS + 1):
+        try:
+            # Hold the concurrency slot only for the in-flight request, not the
+            # backoff sleep, so a throttled call doesn't block a healthy one.
+            async with semaphore:
+                response = await asyncio.wait_for(
+                    client.aio.models.generate_content(model=model, contents=prompt, config=config),
+                    timeout=GEMINI_SEARCH_TIMEOUT,
+                )
+            break
+        except asyncio.TimeoutError:
+            logger.warning(f"GeminiSearch: {model} timed out after {GEMINI_SEARCH_TIMEOUT}s")
+            raise
+        except Exception as exc:  # noqa: BLE001 — re-raised below unless retryable 503
+            if _is_throttle_503(exc) and attempt < _GROUNDED_RETRY_ATTEMPTS:
+                delay = _GROUNDED_RETRY_BASE_DELAY * attempt
+                logger.warning(
+                    f"GeminiSearch: {model} 503 throttle (attempt {attempt}/{_GROUNDED_RETRY_ATTEMPTS}); "
+                    f"retrying in {delay:.0f}s"
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise
+    assert response is not None  # loop either breaks with a response or raises
 
     formatted = _format_grounded_response(response)
     n_chunks = 0
