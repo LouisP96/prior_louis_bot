@@ -80,11 +80,10 @@ jobs:
           GOOGLE_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_SEARCH_ENABLED: 'true'
           # OpenRouter Gemini routing (forecaster, stacker, summarizer when the
-          # ensemble includes a Google model). When 'false' (default), Gemini
-          # OpenRouter calls flow through OPENROUTER_API_KEY only — bypassing
-          # the Metaculus-donated OAI_ANTH_OPENROUTER_KEY wrapper. Off because
-          # the donated-key Google route has been flaky.
-          GEMINI_USE_DONATED_OPENROUTER_KEY: 'false'
+          # ensemble includes a Google model). When 'true', Gemini OpenRouter
+          # calls flow through the Metaculus-donated OAI_ANTH_OPENROUTER_KEY
+          # with paid-key fallback (Discord raised the donated Google limits).
+          GEMINI_USE_DONATED_OPENROUTER_KEY: 'true'
           # Second-pass gap-fill: analyzer identifies gaps in first-pass research,
           # parallel grounded Gemini searches resolve each. Fails soft.
           GAP_FILL_ENABLED: 'true'
@@ -107,11 +106,23 @@ jobs:
           OPENAI_AGENTS_DISABLE_TRACING: 'true'
           # Persist research outputs as JSONL for offline backtest replay.
           PERSIST_RESEARCH_ENABLED: 'true'
+          # gemini-3-flash-preview default is heavily 503-throttled; GA model is reliable.
+          GEMINI_SEARCH_MODEL: 'gemini-3.5-flash'
+          # Save full ForecastReport JSON (uploaded as artifact below).
+          REPORTS_DIR: 'reports/'
       - name: Upload research outputs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: research-${{ github.run_id }}
           path: research_outputs/
+          retention-days: 180
+          if-no-files-found: ignore
+      - name: Upload forecast reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ github.run_id }}
+          path: reports/
           retention-days: 180
           if-no-files-found: ignore

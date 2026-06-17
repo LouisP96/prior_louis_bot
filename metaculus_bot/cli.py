@@ -95,11 +95,14 @@ def main() -> None:
         )
         research_sink = research_writer.record
 
+    # Optional local report archive; defaults to None to preserve CI behaviour.
+    reports_dir = os.environ.get("REPORTS_DIR") or None
+
     template_bot = TemplateForecaster(
         research_reports_per_question=1,
         predictions_per_research_report=1,  # Ignored when 'forecasters' present
         publish_reports_to_metaculus=True,
-        folder_to_save_reports_to=None,
+        folder_to_save_reports_to=reports_dir,
         skip_previously_forecasted_questions=True,
         aggregation_strategy=AggregationStrategy.CONDITIONAL_STACKING,
         research_sink=research_sink,
