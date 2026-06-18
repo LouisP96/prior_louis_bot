@@ -1,5 +1,7 @@
 _below description mostly by claude. it's a metaculus forecasting competition bot._
 
+> Based on [No-Stream/metaculus-bot](https://github.com/No-Stream/metaculus-bot) (originally by Jan F-F), MIT licensed. See `LICENSE`.
+
 ---
 
 # Metaculus Forecasting Bot
