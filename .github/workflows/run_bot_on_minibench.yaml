@@ -127,7 +127,7 @@ jobs:
         with:
           name: research-${{ github.run_id }}
           path: research_outputs/
-          retention-days: 180
+          retention-days: 90
           if-no-files-found: ignore
       - name: Upload forecast reports
         if: always()
@@ -135,5 +135,5 @@ jobs:
         with:
           name: reports-${{ github.run_id }}
           path: reports/
-          retention-days: 180
+          retention-days: 90
           if-no-files-found: ignore
