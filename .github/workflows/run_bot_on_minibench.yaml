@@ -6,7 +6,7 @@ on:
     # Split across multiple cron entries to avoid GitHub Actions silently dropping
     # */N schedules under runner load. Offsets staggered off the tournament workflow's
     # :03/:23/:43 to spread runner pickup. Make sure to skip already forecasted questions!
-    - cron: "8 * * * *"  # every hour at :08
+    - cron: "8 * * * *" # every hour at :08
     - cron: "38 * * * *" # every hour at :38
 
 # Add concurrency group to prevent parallel runs
