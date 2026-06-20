@@ -230,7 +230,7 @@ class TestEdgeCases:
         """Question with cdf_size != 201 (already discrete) → skip."""
         question = _make_question(lower_bound=-0.5, upper_bound=7.5, cdf_size=9)
         dist = NumericDistribution(
-            declared_percentiles=[Percentile(value=3.0, percentile=0.5)],
+            declared_percentiles=[Percentile(value=3.0, percentile=0.5), Percentile(value=4.0, percentile=0.6)],
             open_upper_bound=False,
             open_lower_bound=False,
             upper_bound=7.5,
@@ -499,7 +499,7 @@ class TestSnapDistributionToIntegers:
     def test_skips_discrete_question(self):
         question = _make_question(lower_bound=-0.5, upper_bound=7.5, cdf_size=9)
         dist = NumericDistribution(
-            declared_percentiles=[Percentile(value=3.0, percentile=0.5)],
+            declared_percentiles=[Percentile(value=3.0, percentile=0.5), Percentile(value=4.0, percentile=0.6)],
             open_upper_bound=False,
             open_lower_bound=False,
             upper_bound=7.5,

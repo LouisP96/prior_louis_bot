@@ -204,8 +204,6 @@ class TestParallelProviderSelection:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Verify only primary provider returned when native search disabled."""
-        monkeypatch.setenv("NATIVE_SEARCH_ENABLED", "false")
-        monkeypatch.setenv("FINANCIAL_DATA_ENABLED", "false")
         monkeypatch.setenv("ASKNEWS_CLIENT_ID", "id")
         monkeypatch.setenv("ASKNEWS_SECRET", "secret")
 
@@ -231,7 +229,6 @@ class TestParallelProviderSelection:
         """Verify native search provider added when enabled."""
         monkeypatch.setenv("NATIVE_SEARCH_ENABLED", "true")
         monkeypatch.setenv("NATIVE_SEARCH_MODEL", "openai/gpt-5.5")
-        monkeypatch.setenv("FINANCIAL_DATA_ENABLED", "false")
         monkeypatch.setenv("ASKNEWS_CLIENT_ID", "id")
         monkeypatch.setenv("ASKNEWS_SECRET", "secret")
 

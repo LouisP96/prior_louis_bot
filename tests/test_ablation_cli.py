@@ -5338,8 +5338,9 @@ class TestQuestionShimTimeFields:
         assert isinstance(shim.scheduled_resolution_time, datetime), (
             f"shim.scheduled_resolution_time must be a datetime, got {type(shim.scheduled_resolution_time).__name__}"
         )
-        assert shim.open_time == original_open
-        assert shim.scheduled_resolution_time == original_resolve
+        # shim timestamps are UTC-aware; compare wall-clock against the naive originals.
+        assert shim.open_time.replace(tzinfo=None) == original_open
+        assert shim.scheduled_resolution_time.replace(tzinfo=None) == original_resolve
         # Sanity: subtraction (the operation that would crash on a sub-MagicMock) works.
         delta = shim.scheduled_resolution_time - shim.open_time
         assert delta.days > 0

@@ -10,7 +10,7 @@ and known-good tournament; the same key worked seconds before and after.
 This module applies two patches at startup, both via
 ``apply_fetch_hardening()`` (idempotent, sentinel-guarded):
 
-1. Global socket-timeout patch: ``forecasting_tools.helpers.metaculus_api``'s
+1. Global socket-timeout patch: ``forecasting_tools.helpers.metaculus_client``'s
    ``requests.get`` is replaced once with a wrapper that injects
    ``timeout=FETCH_GET_TIMEOUT`` if the caller didn't supply one. Patched
    once and left in place — no per-request toggle. This dodges a lost-update
@@ -18,7 +18,7 @@ This module applies two patches at startup, both via
    and tightens the default for every GET in forecasting-tools that funnels
    through this module (defense in depth).
 
-2. Bounded retry on ``MetaculusApi._get_questions_from_api`` — the single
+2. Bounded retry on ``MetaculusClient._get_questions_from_api`` — the single
    chokepoint for every question-list GET (fed by ``forecast_on_tournament``,
    ``forecast_questions``, and the random/sequential pagination strategies).
    Retries with exponential backoff + jitter on retryable failures:
@@ -44,8 +44,8 @@ import time
 from typing import Any, Callable
 
 import requests
-from forecasting_tools import MetaculusApi
-from forecasting_tools.helpers import metaculus_api as _ft_metaculus_api
+from forecasting_tools.helpers import metaculus_client as _ft_metaculus_client
+from forecasting_tools.helpers.metaculus_client import MetaculusClient
 
 from metaculus_bot.constants import (
     FETCH_GET_BACKOFF_BASE,
@@ -86,14 +86,14 @@ def _install_get_timeout_default(timeout_s: float) -> None:
     the default for every GET in forecasting-tools that flows through this
     module (the bot's call site is single-threaded, but defense in depth).
     """
-    original_get = _ft_metaculus_api.requests.get
+    original_get = _ft_metaculus_client.requests.get
 
     @functools.wraps(original_get)
     def get_with_timeout(*args: Any, **kwargs: Any) -> Any:
         kwargs.setdefault("timeout", timeout_s)
         return original_get(*args, **kwargs)
 
-    _ft_metaculus_api.requests.get = get_with_timeout
+    _ft_metaculus_client.requests.get = get_with_timeout
 
 
 def _is_retryable(exc: BaseException) -> bool:
@@ -177,7 +177,7 @@ def _wrap_with_retry(method_name: str, original: Callable[..., Any]) -> Callable
 
 def apply_fetch_hardening() -> None:
     """Install fetch hardening: global GET timeout default + bounded retry on the question-list path. Idempotent."""
-    if getattr(MetaculusApi, _SENTINEL, False):
+    if getattr(MetaculusClient, _SENTINEL, False):
         return
 
     # Layer 1: global socket-timeout default on forecasting-tools' requests.get.
@@ -187,19 +187,20 @@ def apply_fetch_hardening() -> None:
 
     # Layer 2: bounded retry on the single chokepoint for question-list GETs.
     for method_name in _PATCHED_METHODS:
-        descriptor = MetaculusApi.__dict__[method_name]
-        if isinstance(descriptor, classmethod):
+        # Resolve the raw function (unwrapping classmethod/staticmethod if present)
+        # and reattach the wrapper as a plain instance method.
+        descriptor = MetaculusClient.__dict__[method_name]
+        if isinstance(descriptor, (classmethod, staticmethod)):
             original_func = descriptor.__func__
         else:
-            # Defensive: forecasting-tools could change the decorator someday.
-            original_func = getattr(MetaculusApi, method_name)
+            original_func = descriptor
 
         wrapped = _wrap_with_retry(method_name, original_func)
-        setattr(MetaculusApi, method_name, classmethod(wrapped))
+        setattr(MetaculusClient, method_name, wrapped)
 
-    setattr(MetaculusApi, _SENTINEL, True)
+    setattr(MetaculusClient, _SENTINEL, True)
     logger.info(
-        "Fetch hardening applied: %d MetaculusApi GET method(s) wrapped (%ds timeout, %d retries, exp backoff)",
+        "Fetch hardening applied: %d MetaculusClient GET method(s) wrapped (%ds timeout, %d retries, exp backoff)",
         len(_PATCHED_METHODS),
         FETCH_GET_TIMEOUT,
         FETCH_GET_RETRIES,

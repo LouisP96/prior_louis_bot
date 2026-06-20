@@ -1,19 +1,20 @@
 """Wall-clock hardening for the synchronous Metaculus publish path.
 
 Stock forecasting-tools makes the four publish POSTs against
-``https://www.metaculus.com/api/`` via blocking ``requests.post`` calls with no
-timeout (see ``forecasting_tools/helpers/metaculus_api.py``):
+``https://www.metaculus.com/api/`` via blocking ``requests.post`` calls (see
+``forecasting_tools/helpers/metaculus_client.py``; ``MetaculusApi`` is now a
+deprecated shim delegating to ``MetaculusClient``):
 
-- ``MetaculusApi.post_binary_question_prediction``      -> ``requests.post``
-- ``MetaculusApi.post_numeric_question_prediction``     -> ``requests.post``
-- ``MetaculusApi.post_multiple_choice_question_prediction`` -> ``requests.post``
-- ``MetaculusApi.post_question_comment``                -> ``requests.post``
+- ``MetaculusClient.post_binary_question_prediction``      -> ``requests.post``
+- ``MetaculusClient.post_numeric_question_prediction``     -> ``requests.post``
+- ``MetaculusClient.post_multiple_choice_question_prediction`` -> ``requests.post``
+- ``MetaculusClient.post_question_comment``                -> ``requests.post``
 
 If the Metaculus API hangs mid-tournament, those calls block the asyncio event
 loop (they're invoked synchronously from inside the `async def
 publish_report_to_metaculus` methods on each report type) and block every other
 Q in the batch from publishing. ``apply_publish_hardening()`` monkey-patches
-each of those four classmethods at startup with two layers of defense:
+each of those four instance methods at startup with two layers of defense:
 
 1. Request-side socket timeout (primary): for the duration of the wrapped
    call, ``requests.post`` on the forecasting-tools module is patched to
@@ -34,13 +35,12 @@ We use ``concurrent.futures.ThreadPoolExecutor`` (rather than asyncio.to_thread)
 because the patched callsite remains synchronous — calling code is
 ``MetaculusApi.post_*(...)`` without await — so we can't return a coroutine.
 
-The wrappers are re-wrapped as ``classmethod`` before being attached, so both
-class-level (``MetaculusApi.post_*(...)``) and instance-level
-(``MetaculusApi().post_*(...)``) calls preserve the original ``cls``-first
-calling convention.
+The wrappers are attached as plain functions, so they rebind as instance
+methods on ``MetaculusClient`` (``self`` flows through as the wrapper's first
+positional arg), preserving the original calling convention.
 
 Idempotent: calling ``apply_publish_hardening()`` more than once is a no-op
-(checked via a sentinel attribute on ``MetaculusApi``).
+(checked via a sentinel attribute on ``MetaculusClient``).
 """
 
 from __future__ import annotations
@@ -52,8 +52,8 @@ import logging
 from typing import Any, Callable, Iterator
 
 import requests
-from forecasting_tools import MetaculusApi
-from forecasting_tools.helpers import metaculus_api as _ft_metaculus_api
+from forecasting_tools.helpers import metaculus_client as _ft_metaculus_client
+from forecasting_tools.helpers.metaculus_client import MetaculusClient
 
 from metaculus_bot.constants import PUBLISH_POST_RETRIES, PUBLISH_POST_TIMEOUT
 
@@ -63,8 +63,8 @@ logger = logging.getLogger(__name__)
 
 _SENTINEL = "_publish_hardening_applied"
 
-# Method names to patch. Each is a synchronous classmethod on MetaculusApi that
-# wraps a single requests.post call.
+# Method names to patch. Each is a synchronous instance method on MetaculusClient
+# that wraps a single requests.post call.
 _PATCHED_METHODS: tuple[str, ...] = (
     "post_binary_question_prediction",
     "post_numeric_question_prediction",
@@ -86,19 +86,19 @@ def _get_executor() -> concurrent.futures.ThreadPoolExecutor:
 
 @contextlib.contextmanager
 def _inject_socket_timeout(timeout_s: float) -> Iterator[None]:
-    """Patch ``forecasting_tools.helpers.metaculus_api.requests.post`` to inject ``timeout=`` if absent."""
-    original_post = _ft_metaculus_api.requests.post
+    """Patch ``forecasting_tools.helpers.metaculus_client.requests.post`` to inject ``timeout=`` if absent."""
+    original_post = _ft_metaculus_client.requests.post
 
     @functools.wraps(original_post)
     def post_with_timeout(*args: Any, **kwargs: Any) -> Any:
         kwargs.setdefault("timeout", timeout_s)
         return original_post(*args, **kwargs)
 
-    _ft_metaculus_api.requests.post = post_with_timeout
+    _ft_metaculus_client.requests.post = post_with_timeout
     try:
         yield
     finally:
-        _ft_metaculus_api.requests.post = original_post
+        _ft_metaculus_client.requests.post = original_post
 
 
 def _wrap_with_timeout_retry(method_name: str, original: Callable[..., Any]) -> Callable[..., Any]:
@@ -150,28 +150,25 @@ def _wrap_with_timeout_retry(method_name: str, original: Callable[..., Any]) -> 
 
 
 def apply_publish_hardening() -> None:
-    """Patch ``MetaculusApi.post_*`` to add timeout + retry. Idempotent."""
-    if getattr(MetaculusApi, _SENTINEL, False):
+    """Patch ``MetaculusClient.post_*`` to add timeout + retry. Idempotent."""
+    if getattr(MetaculusClient, _SENTINEL, False):
         return
 
     for method_name in _PATCHED_METHODS:
-        # Resolve the underlying function from the classmethod descriptor so we
-        # can re-bind cls ourselves and reattach as a classmethod (preserves
-        # both ClassName.foo() and ClassName().foo() calling conventions).
-        descriptor = MetaculusApi.__dict__[method_name]
-        if isinstance(descriptor, classmethod):
+        # Resolve the raw function (unwrapping classmethod/staticmethod if present)
+        # and reattach the wrapper as a plain instance method.
+        descriptor = MetaculusClient.__dict__[method_name]
+        if isinstance(descriptor, (classmethod, staticmethod)):
             original_func = descriptor.__func__
         else:
-            # Defensive: forecasting-tools could change the decorator someday.
-            # Fall back to the bound view, which works for class-level calls.
-            original_func = getattr(MetaculusApi, method_name)
+            original_func = descriptor
 
         wrapped = _wrap_with_timeout_retry(method_name, original_func)
-        setattr(MetaculusApi, method_name, classmethod(wrapped))
+        setattr(MetaculusClient, method_name, wrapped)
 
-    setattr(MetaculusApi, _SENTINEL, True)
+    setattr(MetaculusClient, _SENTINEL, True)
     logger.info(
-        "Publish hardening applied: %d MetaculusApi.post_* methods wrapped with %ds timeout + %d retry",
+        "Publish hardening applied: %d MetaculusClient.post_* methods wrapped with %ds timeout + %d retry",
         len(_PATCHED_METHODS),
         PUBLISH_POST_TIMEOUT,
         PUBLISH_POST_RETRIES,

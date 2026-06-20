@@ -124,6 +124,24 @@ def _enable_per_type_stacking(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_optional_feature_env(monkeypatch):
+    """Delete optional tool/provider env keys so tests use code defaults, not a local .env.
+
+    Tests that need a feature on set it in the test body (runs after this fixture).
+    """
+    for key in (
+        "PROBABILISTIC_TOOLS_ENABLED",
+        "PROBABILISTIC_TOOLS_TYPES",
+        "NATIVE_SEARCH_ENABLED",
+        "GEMINI_SEARCH_ENABLED",
+        "FINANCIAL_DATA_ENABLED",
+        "PREDICTION_MARKETS_ENABLED",
+        "GAP_FILL_ENABLED",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _clear_gemini_client_cache():
     """Clear the module-global genai.Client lru_cache between tests.
 

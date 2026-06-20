@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from forecasting_tools import (
@@ -46,6 +46,11 @@ def _benchmarking_warning(context: BenchmarkingContext = "search") -> str:
     )
 
 
+def _as_utc(dt: datetime) -> datetime:
+    """Normalize a naive or aware datetime to timezone-aware UTC."""
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+
 def _forecasting_window_str(
     question: BinaryQuestion | MultipleChoiceQuestion | NumericQuestion,
 ) -> str:
@@ -63,14 +68,16 @@ def _forecasting_window_str(
     assert question.open_time is not None, "question.open_time is required"
     assert question.scheduled_resolution_time is not None, "question.scheduled_resolution_time is required"
 
-    today = datetime.now()
-    elapsed_days = (today - question.open_time).days
-    remaining_days = (question.scheduled_resolution_time - today).days
+    today = datetime.now(timezone.utc)
+    open_time = _as_utc(question.open_time)
+    resolution_time = _as_utc(question.scheduled_resolution_time)
+    elapsed_days = (today - open_time).days
+    remaining_days = (resolution_time - today).days
 
     return (
         f"Today: {today.strftime('%Y-%m-%d')}\n"
-        f"Question opened: {question.open_time.strftime('%Y-%m-%d')} ({elapsed_days} days ago)\n"
-        f"Scheduled to resolve: {question.scheduled_resolution_time.strftime('%Y-%m-%d')} "
+        f"Question opened: {open_time.strftime('%Y-%m-%d')} ({elapsed_days} days ago)\n"
+        f"Scheduled to resolve: {resolution_time.strftime('%Y-%m-%d')} "
         f"({remaining_days} days from now)\n"
         f"Forecasting window: open date → resolution date. "
         f"Events occurring BEFORE the open date do NOT resolve this question YES "
