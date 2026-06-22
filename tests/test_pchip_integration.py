@@ -211,10 +211,18 @@ class TestPchipIntegration:
         via_get_cdf = [round(p.percentile, 12) for p in dist.get_cdf()]
 
         # Precondition: the grid and a naive interpolation of `declared` differ.
-        base_interp = [round(p.percentile, 12) for p in NumericDistribution(
-            declared_percentiles=declared, open_upper_bound=False, open_lower_bound=False,
-            upper_bound=100.0, lower_bound=0.0, zero_point=None, cdf_size=201,
-        ).get_cdf()]
+        base_interp = [
+            round(p.percentile, 12)
+            for p in NumericDistribution(
+                declared_percentiles=declared,
+                open_upper_bound=False,
+                open_lower_bound=False,
+                upper_bound=100.0,
+                lower_bound=0.0,
+                zero_point=None,
+                cdf_size=201,
+            ).get_cdf()
+        ]
         assert base_interp != expected
 
         assert via_get_cdf == expected
