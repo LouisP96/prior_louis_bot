@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 from forecasting_tools import (
     BinaryQuestion,
+    DateQuestion,
     GeneralLlm,
     MetaculusQuestion,
     MultipleChoiceQuestion,
@@ -35,7 +36,7 @@ from metaculus_bot.aggregation_strategies import (
 from metaculus_bot.constants import STACKER_FALLBACK_SOFT_DEADLINE, STACKER_SOFT_DEADLINE
 from metaculus_bot.numeric.diagnostics import log_final_prediction
 from metaculus_bot.numeric.pipeline import build_numeric_distribution, sanitize_percentiles
-from metaculus_bot.numeric.utils import bound_messages
+from metaculus_bot.numeric.utils import bound_messages, numeric_view_of_date_question
 from metaculus_bot.numeric.validation import detect_unit_mismatch
 
 logger = logging.getLogger(__name__)
@@ -424,9 +425,13 @@ class AggregationPipeline:
         if isinstance(first, (int, float)):
             values = [float(p) for p in predictions if isinstance(p, (int, float))]
             return combine_binary_predictions(values, strategy)  # type: ignore[return-value]
-        if isinstance(first, NumericDistribution) and isinstance(question, NumericQuestion):
+        if isinstance(first, NumericDistribution) and isinstance(question, (NumericQuestion, DateQuestion)):
             numeric_preds = [p for p in predictions if isinstance(p, NumericDistribution)]
-            return combine_numeric_predictions(numeric_preds, question, strategy)  # type: ignore[return-value]
+            # Date questions carry datetime bounds; the numeric combiner needs float (timestamp) bounds.
+            combine_question = (
+                numeric_view_of_date_question(question) if isinstance(question, DateQuestion) else question
+            )
+            return combine_numeric_predictions(numeric_preds, combine_question, strategy)  # type: ignore[return-value]
         if isinstance(first, PredictedOptionList):
             mc_preds = [p for p in predictions if isinstance(p, PredictedOptionList)]
             return combine_multiple_choice_predictions(mc_preds, strategy)  # type: ignore[return-value]
