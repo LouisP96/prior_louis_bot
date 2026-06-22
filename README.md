@@ -261,7 +261,13 @@ metaculus-bot/
 │   ├── comment/                    # formatting.py, markers.py, trimming.py — published-comment assembly
 │   ├── ensemble_analysis/          # correlation_analysis, ensemble_simulator, cdf_cache, benchmark_identity, types (offline analysis)
 │   ├── probabilistic_tools/        # active (gated by PROBABILISTIC_TOOLS_ENABLED) Bayesian / survival / fit helpers
-│   └── tool_runner.py              # active (gated by PROBABILISTIC_TOOLS_ENABLED) deterministic math over structured blocks
+│   ├── tool_runner.py              # active (gated by PROBABILISTIC_TOOLS_ENABLED) deterministic math over structured blocks
+│   ├── ablation/                   # probabilistic-tools ablation benchmark (CLI: python -m metaculus_bot.ablation.cli); per-stage cached fetch→research→screen→forecast→stack→score
+│   ├── backtest/                   # support package for backtest.py: question_prep.py, leakage.py, scoring.py, analysis.py
+│   ├── benchmark/                  # benchmark bot assembly (bot_factory.py) + run logging / heartbeat
+│   ├── calibration/                # Platt scaling (logistic recalibration): platt.py, params.py, fit_platt_cli.py
+│   ├── performance_analysis/       # offline realized-performance analysis from resolved Qs (CLI: python -m metaculus_bot.performance_analysis)
+│   └── utils/                      # shared helpers (logging_utils.py)
 ├── tests/                      # Pytest suite
 ├── .github/workflows/          # CI + scheduled bot runs
 ├── AGENTS.md                   # Repo-specific agent/coding guidelines (CLAUDE.md is a symlink)
