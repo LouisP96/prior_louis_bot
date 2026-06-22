@@ -8,6 +8,7 @@ import numpy as np
 from forecasting_tools import NumericDistribution
 from forecasting_tools.data_models.numeric_report import Percentile
 from forecasting_tools.data_models.questions import NumericQuestion
+from pydantic import model_validator
 
 from metaculus_bot.constants import NUM_MAX_STEP, NUM_MIN_PROB_STEP, NUM_RAMP_K_FACTOR
 from metaculus_bot.numeric.config import (
@@ -206,6 +207,34 @@ def _log_pchip_success(pchip_cdf: list[float], question: NumericQuestion, smooth
     )
 
 
+class PchipNumericDistribution(NumericDistribution):
+    """A NumericDistribution whose CDF comes from a precomputed PCHIP grid."""
+
+    def __init__(self, pchip_cdf_values, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._pchip_cdf_values = pchip_cdf_values
+
+    @model_validator(mode="after")
+    def validate_percentiles(self) -> "PchipNumericDistribution":
+        percentiles = self.declared_percentiles
+        for i in range(len(percentiles) - 1):
+            if percentiles[i].percentile >= percentiles[i + 1].percentile:
+                raise ValueError("Percentiles must be in strictly increasing order")
+            if percentiles[i].value > percentiles[i + 1].value:
+                raise ValueError("Values must be in strictly increasing order")
+        return self
+
+    def get_cdf(self) -> list[Percentile]:
+        """Return the precomputed PCHIP CDF as Percentile objects (the publish path)."""
+        x_vals = np.linspace(self.lower_bound, self.upper_bound, len(self._pchip_cdf_values))
+
+        # _pchip_cdf_values are the probabilities; x_vals are the matching question values.
+        return [
+            Percentile(percentile=prob_val, value=question_val)
+            for question_val, prob_val in zip(x_vals, self._pchip_cdf_values)
+        ]
+
+
 def create_pchip_numeric_distribution(
     pchip_cdf: list[float],
     percentile_list: list[Percentile],
@@ -213,26 +242,6 @@ def create_pchip_numeric_distribution(
     zero_point: float | None,
 ) -> NumericDistribution:
     """Create a custom NumericDistribution that uses PCHIP CDF."""
-
-    class PchipNumericDistribution(NumericDistribution):
-        def __init__(self, pchip_cdf_values, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self._pchip_cdf_values = pchip_cdf_values
-
-        @property
-        def cdf(self) -> list[Percentile]:
-            """Return PCHIP-generated CDF as Percentile objects."""
-            # Create the value axis (201 points from lower to upper bound)
-            x_vals = np.linspace(self.lower_bound, self.upper_bound, len(self._pchip_cdf_values))
-
-            # Create Percentile objects with correct mapping:
-            # _pchip_cdf_values contains the probability values (0-1)
-            # x_vals contains the corresponding question values
-            return [
-                Percentile(percentile=prob_val, value=question_val)
-                for question_val, prob_val in zip(x_vals, self._pchip_cdf_values)
-            ]
-
     return PchipNumericDistribution(
         pchip_cdf_values=pchip_cdf,
         declared_percentiles=percentile_list,

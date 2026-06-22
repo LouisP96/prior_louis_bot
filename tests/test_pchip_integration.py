@@ -172,6 +172,61 @@ class TestPchipIntegration:
             spacing = abs(result_cdf[i + 1].percentile - result_cdf[i].percentile)
             assert spacing >= 5e-05, f"Spacing violation at index {i}: {spacing}"
 
+    def test_get_cdf_returns_pchip_grid_not_interpolated_percentiles(self):
+        """get_cdf() (the publish path) must return the PCHIP grid, not interpolated declared percentiles."""
+        from forecasting_tools.data_models.questions import NumericQuestion
+
+        from metaculus_bot.numeric.pchip_processing import create_pchip_numeric_distribution
+
+        question = NumericQuestion(
+            question_text="X",
+            id_of_question=1,
+            page_url="u",
+            background_info="",
+            resolution_criteria="",
+            fine_print="",
+            lower_bound=0.0,
+            upper_bound=100.0,
+            open_lower_bound=False,
+            open_upper_bound=False,
+        )
+        # Kinked declared points whose interpolation differs from the linear grid.
+        declared = [
+            Percentile(percentile=0.025, value=5.0),
+            Percentile(percentile=0.05, value=8.0),
+            Percentile(percentile=0.10, value=12.0),
+            Percentile(percentile=0.20, value=20.0),
+            Percentile(percentile=0.40, value=35.0),
+            Percentile(percentile=0.50, value=42.0),
+            Percentile(percentile=0.60, value=50.0),
+            Percentile(percentile=0.80, value=70.0),
+            Percentile(percentile=0.90, value=85.0),
+            Percentile(percentile=0.95, value=92.0),
+            Percentile(percentile=0.975, value=96.0),
+        ]
+        grid = list(np.linspace(0.001, 0.999, 201))
+        dist = create_pchip_numeric_distribution(grid, declared, question, zero_point=None)
+
+        expected = [round(p, 12) for p in grid]
+        via_get_cdf = [round(p.percentile, 12) for p in dist.get_cdf()]
+
+        # Precondition: the grid and a naive interpolation of `declared` differ.
+        base_interp = [
+            round(p.percentile, 12)
+            for p in NumericDistribution(
+                declared_percentiles=declared,
+                open_upper_bound=False,
+                open_lower_bound=False,
+                upper_bound=100.0,
+                lower_bound=0.0,
+                zero_point=None,
+                cdf_size=201,
+            ).get_cdf()
+        ]
+        assert base_interp != expected
+
+        assert via_get_cdf == expected
+
     def test_problematic_distribution_case(self):
         """Test with a distribution similar to the one that was failing."""
         # Create a distribution that would likely fail the original spacing check

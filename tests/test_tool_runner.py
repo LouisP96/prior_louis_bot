@@ -38,7 +38,9 @@ def _enable_feature_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tool runner gates all public entry points on ``PROBABILISTIC_TOOLS_ENABLED``.
 
     Tests exercise the path where the feature is ON; the flag-off case is
-    covered by ``TestFeatureFlagGating`` below.
+    covered by ``TestFeatureFlagGating`` below. (.env isolation — including the
+    ``PROBABILISTIC_TOOLS_TYPES`` allow-list defaulting to all types — is handled
+    once by the autouse fixture in conftest.py.)
     """
     monkeypatch.setenv(FEATURE_FLAG_ENV, "1")
 

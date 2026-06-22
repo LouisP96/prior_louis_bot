@@ -220,10 +220,14 @@ class TestApplyMCPlatt:
         names = [f"opt_{i}" for i in range(len(raw))]
         opts = self._make_options(list(zip(names, raw)))
 
+        # PredictedOptionList clamps/renormalizes on construction, so snapshot the
+        # post-construction probabilities apply_mc_platt actually operates on.
+        input_probs = [o.probability for o in opts.predicted_options]
+
         result = apply_mc_platt(opts, params)
 
         # Reference: the math the implementation should be doing.
-        per_option = [_sigmoid(params.bias + params.slope * _logit(p)) for p in raw]
+        per_option = [_sigmoid(params.bias + params.slope * _logit(p)) for p in input_probs]
         clamped = [max(MC_PROB_MIN, min(MC_PROB_MAX, q)) for q in per_option]
         total = sum(clamped)
         expected = [q / total for q in clamped]
