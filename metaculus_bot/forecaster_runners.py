@@ -15,6 +15,8 @@ import logging
 from forecasting_tools import (
     BinaryPrediction,
     BinaryQuestion,
+    DatePercentile,
+    DateQuestion,
     GeneralLlm,
     MultipleChoiceQuestion,
     NumericDistribution,
@@ -35,10 +37,16 @@ from metaculus_bot.numeric.diagnostics import log_final_prediction
 from metaculus_bot.numeric.discrete_snap import OutcomeTypeResult
 from metaculus_bot.numeric.pchip_processing import create_pchip_numeric_distribution
 from metaculus_bot.numeric.pipeline import build_numeric_distribution, sanitize_percentiles
-from metaculus_bot.numeric.utils import bound_messages, clamp_and_renormalize_mc
+from metaculus_bot.numeric.utils import (
+    bound_messages,
+    clamp_and_renormalize_mc,
+    date_bound_messages,
+    numeric_view_of_date_question,
+    to_utc_timestamp,
+)
 from metaculus_bot.numeric.validation import detect_unit_mismatch
 from metaculus_bot.numeric_format_router import detect_numeric_format, route_numeric_output
-from metaculus_bot.prompts import binary_prompt, multiple_choice_prompt, numeric_prompt
+from metaculus_bot.prompts import binary_prompt, date_prompt, multiple_choice_prompt, numeric_prompt
 from metaculus_bot.simple_types import OptionProbability
 
 logger = logging.getLogger(__name__)
@@ -269,3 +277,42 @@ async def run_numeric_forecast(
 
     log_final_prediction(prediction, question)
     return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning), discrete_vote
+
+
+async def run_date_forecast(
+    question: DateQuestion,
+    research: str,
+    forecaster_llm: GeneralLlm,
+    parser_llm: GeneralLlm,
+) -> ReasonedPrediction[NumericDistribution]:
+    """Run a date forecast: parse dates as UNIX timestamps and build a PCHIP CDF.
+
+    Dates are modeled as a NumericDistribution over timestamps, reusing the numeric
+    PCHIP construction. The library wraps the result in a DateReport whose publish
+    path matches numeric (get_cdf -> post_numeric_question_prediction).
+    """
+    upper_bound_message, lower_bound_message = date_bound_messages(question)
+    prompt = date_prompt(question, research, lower_bound_message, upper_bound_message)
+    reasoning = await forecaster_llm.invoke(prompt)
+
+    _log_llm_output(forecaster_llm.model, question.id_of_question, reasoning)
+
+    date_percentiles: list[DatePercentile] = await structure_output(
+        reasoning,
+        list[DatePercentile],
+        model=parser_llm,
+        additional_instructions=(
+            "Extract the trailing 'Percentile X: YYYY-MM-DD' lines. Each 'value' is a date; "
+            "assume midnight UTC if no time is given. Return percentiles in strictly increasing order. "
+            "If percentiles are not explicitly given in the text, do not fabricate them."
+        ),
+    )
+
+    percentile_list = [Percentile(percentile=p.percentile, value=to_utc_timestamp(p.value)) for p in date_percentiles]
+
+    ts_question = numeric_view_of_date_question(question)
+    sanitized_percentiles, zero_point = sanitize_percentiles(percentile_list, ts_question)
+    prediction = build_numeric_distribution(sanitized_percentiles, ts_question, zero_point)
+
+    log_final_prediction(prediction, ts_question)
+    return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning)

@@ -251,6 +251,7 @@ def create_pchip_numeric_distribution(
         lower_bound=question.lower_bound,
         zero_point=zero_point,
         cdf_size=getattr(question, "cdf_size", None),
+        is_date=getattr(question, "is_date", False),
     )
 
 
@@ -268,4 +269,5 @@ def create_fallback_numeric_distribution(
         lower_bound=question.lower_bound,
         zero_point=zero_point,
         cdf_size=getattr(question, "cdf_size", None),
+        is_date=getattr(question, "is_date", False),
     )

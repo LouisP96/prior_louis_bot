@@ -642,6 +642,16 @@ class TemplateForecaster(CompactLoggingForecastBot):
                 default_meta_reasoning="Stacked prediction aggregated from multiple models",
             )
         elif self.aggregation_strategy == AggregationStrategy.CONDITIONAL_STACKING and not skip_stacking_for_budget:
+            if isinstance(question, DateQuestion):
+                # MVP: date questions are not stacked; aggregate by median-of-CDFs (base combine).
+                self._register_expected_base_combine(question)
+                self._stacker_outcome[question.id_of_question] = "skipped"
+                return ResearchWithPredictions(
+                    research_report=research,
+                    summary_report=summary_report,
+                    errors=errors,
+                    predictions=valid_predictions,
+                )
             prediction_values = [pred.prediction_value for pred in valid_predictions]
             spread = compute_spread(question, prediction_values)
             threshold = self._get_threshold_for_question(question)
@@ -884,7 +894,9 @@ class TemplateForecaster(CompactLoggingForecastBot):
             def forecast_function(q, r, llm):
                 return self._run_forecast_on_numeric(q, r, llm)
         elif isinstance(question, DateQuestion):
-            raise NotImplementedError("Date questions not supported yet")
+
+            def forecast_function(q, r, llm):
+                return self._run_forecast_on_date(q, r, llm)
         else:
             raise ValueError(f"Unknown question type: {type(question)}")
 
@@ -949,6 +961,13 @@ class TemplateForecaster(CompactLoggingForecastBot):
         if qid is not None and discrete_vote is not None:
             self._discrete_integer_votes[qid].append(discrete_vote)
         return prediction
+
+    async def _run_forecast_on_date(
+        self, question: DateQuestion, research: str, llm_to_use: GeneralLlm
+    ) -> ReasonedPrediction[NumericDistribution]:
+        from metaculus_bot.forecaster_runners import run_date_forecast
+
+        return await run_date_forecast(question, research, llm_to_use, self.get_llm("parser", "llm"))
 
     def _log_llm_output(self, llm_to_use: GeneralLlm, question_id: int | None, reasoning: str) -> None:
         model_name = llm_to_use.model

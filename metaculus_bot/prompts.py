@@ -3,6 +3,7 @@ from typing import Literal
 
 from forecasting_tools import (
     BinaryQuestion,
+    DateQuestion,
     MultipleChoiceQuestion,
     NumericQuestion,
     clean_indents,
@@ -10,6 +11,7 @@ from forecasting_tools import (
 
 __all__ = [
     "binary_prompt",
+    "date_prompt",
     "disagreement_crux_prompt",
     "gap_fill_analyzer_prompt",
     "gap_fill_search_prompt",
@@ -609,6 +611,129 @@ def numeric_prompt(
         Percentile 90: 78.9
         Percentile 95: 89.0
         Percentile 97.5: 123.4
+        """
+    )
+
+
+def date_prompt(
+    question: DateQuestion,
+    research: str,
+    lower_bound_message: str,
+    upper_bound_message: str,
+) -> str:
+    return clean_indents(
+        f"""
+        You are a **senior forecaster** writing a public report for expert peers.
+        This is a **date question**: the answer is the calendar date on which the
+        described outcome occurs. You will be scored with Metaculus' log-score, so
+        accuracy **and** calibration (the width of your prediction interval) are
+        critical. Good forecasters set wide 90/10 intervals to account for unknown
+        unknowns, but do not over-hedge on outcomes you can actually time well.
+
+        ── Question ──
+        {question.question_text}
+
+        ── Context ──
+        {question.background_info}
+
+        {question.resolution_criteria}
+        {question.fine_print}
+
+        ── Dates & Bounds (must follow) ──
+        • Express every percentile as a calendar date in **YYYY-MM-DD** format. No other format.
+        • {lower_bound_message}
+        • {upper_bound_message}
+        • All 11 percentiles must be dates within the allowed range and in **strictly
+          increasing chronological order** (earliest at the lowest percentile).
+
+        ── Intelligence Briefing (assistant research) ────────────────────────
+        {research}
+
+        {_forecasting_window_str(question)}
+
+        Reproduce the following analysis template in your answer:
+
+        -- Analysis Template ──
+
+        PHASE 1: OUTSIDE VIEW (anchor on historical context above)
+
+        (1) Source analysis and data anchor
+            - Summarize key sources; note recency, credibility, and scope.
+            - Separate facts from opinions; weight opinions strongly only from identifiable experts.
+            - What is the most recent authoritative signal about the timing of this outcome?
+
+        (2) Outside view and base rates
+            - Candidate reference classes for how long outcomes like this take.
+            - State the outside-view date range and how you anchor to it.
+            - If the data supports it, extrapolate an explicit timeline (trend, rate, milestone cadence).
+
+        (3) Timeframe and dynamics
+            - Time until resolution is known; how shifting assumptions moves the date.
+            - Status-quo date: when the outcome lands if current conditions simply persist.
+            - Trend continuation: extrapolate the current trajectory to a date.
+
+        (4) Expert and market priors
+            - Cite date ranges or point forecasts from specialists, prediction markets, or peers.
+
+        ── Now consider the recent developments above ──
+
+        PHASE 2: INSIDE VIEW UPDATE (update from your base rate using current news)
+
+        (5) Evidence weighting (Strong/Moderate/Weak) for inside-view adjustments.
+
+        (6) Tail scenarios
+            - Coherent pathway for an unusually **early** date.
+            - Coherent pathway for an unusually **late** date.
+
+        (7) Red team and final rationale — integrate outside→inside view
+            - Challenge assumptions and data quality.
+            - State: "My base-rate median was <date>. After current evidence, I'm moving to <date> because..."
+            - Small delta check: would shifting key percentiles by a few months still fit the reasoning?
+            - Trajectory check: does "status quo" mean "nothing changes" or "the current trajectory reaches its natural conclusion"?
+            - Hedge audit: only widen the interval when you can name specific evidence creating that uncertainty.
+
+        (8) Calibration and distribution shaping
+            - Think in ranges, not a single date.
+            - Keep 2.5% and 97.5% far apart to allow for unknown unknowns.
+            - Ensure strictly increasing dates. Respect the explicit bounds above.
+
+        (9) Forecastability classification
+            How inherently predictable is this date on the given horizon?
+            Output exactly one of:
+            FORECASTABILITY: HIGH
+            FORECASTABILITY: MEDIUM
+            FORECASTABILITY: LOW
+            For LOW forecastability, your interval should span a large fraction of the allowed range.
+
+        (10) Brief checklist
+            - Paraphrase the resolution criteria in less than 30 words.
+            - Bait-and-switch check: does your reasoning address the EXACT resolution criteria?
+            - State the outside-view baseline date used.
+            - Top 3 to 5 evidence items plus a quick validity check.
+            - Forecastability check: does your interval width match the classification?
+
+        ── OUTPUT FORMAT ──
+        Emit the trailing 11 standard percentiles as your Prediction block, each a
+        date in YYYY-MM-DD format, strictly increasing chronologically.
+
+        Prediction:
+        [Reminders:
+        - Dates in YYYY-MM-DD format
+        - Must be the last lines, nothing after
+        - STRICTLY INCREASING dates meaning e.g. p20 is later than p10 and not equal.)
+        Example:]
+
+        Percentile 2.5: 2031-02-15
+        Percentile 5: 2032-06-01
+        Percentile 10: 2033-09-20
+        Percentile 20: 2035-01-10
+        Percentile 40: 2037-04-05
+        Percentile 50: 2038-08-12
+        Percentile 60: 2040-01-01
+        Percentile 80: 2043-07-18
+        Percentile 90: 2046-11-30
+        Percentile 95: 2049-05-22
+        Percentile 97.5: 2052-12-01
         """
     )
 

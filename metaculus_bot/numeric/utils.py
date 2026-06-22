@@ -5,6 +5,8 @@ user-friendly bound messages so that the core forecaster class stays small.
 """
 
 import logging
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Literal, Sequence
 
 import numpy as np
@@ -14,7 +16,7 @@ from forecasting_tools.data_models.numeric_report import (
     NumericDistribution,
     Percentile,
 )
-from forecasting_tools.data_models.questions import NumericQuestion
+from forecasting_tools.data_models.questions import DateQuestion, NumericQuestion
 
 from metaculus_bot.constants import MC_PROB_MAX, MC_PROB_MIN, NUM_MIN_PROB_STEP, NUM_RAMP_K_FACTOR
 from metaculus_bot.numeric.pchip_cdf import generate_pchip_cdf
@@ -24,6 +26,9 @@ __all__ = [
     "aggregate_numeric",
     "aggregate_binary_mean",
     "bound_messages",
+    "date_bound_messages",
+    "numeric_view_of_date_question",
+    "to_utc_timestamp",
     "clamp_and_renormalize_mc",
 ]
 
@@ -201,6 +206,55 @@ def bound_messages(question: NumericQuestion) -> tuple[str, str]:
     else:
         lower_bound_message = f"The outcome can not be lower than {lower_bound_number}."
     return upper_bound_message, lower_bound_message
+
+
+def date_bound_messages(question: DateQuestion) -> tuple[str, str]:
+    """Return upper & lower bound helper messages for date prompts.
+
+    DateQuestion bounds are datetimes; present them as ISO dates.
+    """
+    upper = question.upper_bound.date().isoformat()
+    lower = question.lower_bound.date().isoformat()
+
+    if question.open_upper_bound:
+        upper_bound_message = f"The resolution date is likely not later than {upper}."
+    else:
+        upper_bound_message = f"The resolution date can not be later than {upper}."
+
+    if question.open_lower_bound:
+        lower_bound_message = f"The resolution date is likely not earlier than {lower}."
+    else:
+        lower_bound_message = f"The resolution date can not be earlier than {lower}."
+    return upper_bound_message, lower_bound_message
+
+
+def to_utc_timestamp(dt: datetime) -> float:
+    """UNIX timestamp, treating naive datetimes as UTC so bounds and parsed dates agree."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def numeric_view_of_date_question(question: DateQuestion) -> SimpleNamespace:
+    """Numeric-pipeline view of a date question with float (UNIX timestamp) bounds.
+
+    The PCHIP/aggregation pipeline does float arithmetic on lower_bound/upper_bound,
+    but a DateQuestion exposes those as datetimes. Date percentile values are
+    timestamps, so the bounds must be timestamps in the same units.
+    """
+    return SimpleNamespace(
+        lower_bound=to_utc_timestamp(question.lower_bound),
+        upper_bound=to_utc_timestamp(question.upper_bound),
+        open_lower_bound=question.open_lower_bound,
+        open_upper_bound=question.open_upper_bound,
+        cdf_size=question.cdf_size,
+        zero_point=question.zero_point,
+        id_of_question=question.id_of_question,
+        page_url=question.page_url,
+        nominal_lower_bound=None,
+        nominal_upper_bound=None,
+        is_date=True,
+    )
 
 
 def clamp_and_renormalize_mc(
