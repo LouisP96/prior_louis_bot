@@ -125,23 +125,11 @@ jobs:
           OPENAI_AGENTS_DISABLE_TRACING: 'true'
           # Persist research outputs as JSONL for offline backtest replay.
           PERSIST_RESEARCH_ENABLED: 'true'
-          # gemini-3-flash-preview default is heavily 503-throttled; GA model is reliable.
-          GEMINI_SEARCH_MODEL: 'gemini-3.5-flash'
-          # Save full ForecastReport JSON (uploaded as artifact below).
-          REPORTS_DIR: 'reports/'
       - name: Upload research outputs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: research-${{ github.run_id }}
           path: research_outputs/
-          retention-days: 90
-          if-no-files-found: ignore
-      - name: Upload forecast reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: reports-${{ github.run_id }}
-          path: reports/
           retention-days: 90
           if-no-files-found: ignore
