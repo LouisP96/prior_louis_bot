@@ -325,6 +325,154 @@ async def test_empty_response_text_returns_empty(monkeypatch: pytest.MonkeyPatch
 
 
 # ---------------------------------------------------------------------------
+# 503 throttle handling: retry-under-budget + fallback model
+# ---------------------------------------------------------------------------
+
+
+def _throttle_503() -> Exception:
+    """A stand-in for google.genai's ServerError that _is_throttle_503 recognizes."""
+    return Exception("503 UNAVAILABLE. This model is currently experiencing high demand.")
+
+
+def _make_dispatching_client(handler) -> MagicMock:
+    """Client whose generate_content runs ``handler(**kwargs)`` (raise or return) per call."""
+    client = MagicMock()
+    client.aio = MagicMock()
+    client.aio.models = MagicMock()
+    client.aio.models.generate_content = AsyncMock(side_effect=handler)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_retries_on_503_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A single 503 is retried; the next attempt's success is returned."""
+    monkeypatch.setenv("GOOGLE_API_KEY", "fake-key")
+    monkeypatch.delenv("GEMINI_SEARCH_MODEL", raising=False)
+
+    response = _make_response("recovered body", chunks=[CannedWebChunk("https://x/1", "X")])
+    fake_client = _make_client_with_response(response)
+    fake_client.aio.models.generate_content = AsyncMock(side_effect=[_throttle_503(), response])
+
+    with (
+        patch("metaculus_bot.research.gemini_search.genai.Client", return_value=fake_client),
+        patch("metaculus_bot.research.gemini_search.asyncio.sleep", new=AsyncMock()) as sleep_mock,
+    ):
+        from metaculus_bot.research.gemini_search import invoke_gemini_grounded
+
+        out = await invoke_gemini_grounded("prompt")
+
+    assert "recovered body" in out
+    assert fake_client.aio.models.generate_content.await_count == 2
+    # Backoff was applied between the failed attempt and the retry.
+    assert sleep_mock.await_count == 1
+    # Stayed on the primary model — no fallback needed.
+    models_called = [c.kwargs["model"] for c in fake_client.aio.models.generate_content.await_args_list]
+    assert models_called == ["gemini-3-flash-preview", "gemini-3-flash-preview"]
+
+
+@pytest.mark.asyncio
+async def test_falls_back_to_secondary_model_on_503_exhaustion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Primary model 503s on every attempt; the GA fallback model is tried once and wins."""
+    monkeypatch.setenv("GOOGLE_API_KEY", "fake-key")
+    monkeypatch.delenv("GEMINI_SEARCH_MODEL", raising=False)
+
+    fallback_response = _make_response("fallback body")
+    calls: list[str] = []
+
+    def handler(**kwargs):
+        calls.append(kwargs["model"])
+        if kwargs["model"] == "gemini-3-flash-preview":
+            raise _throttle_503()
+        return fallback_response
+
+    fake_client = _make_dispatching_client(handler)
+
+    with (
+        patch("metaculus_bot.research.gemini_search.genai.Client", return_value=fake_client),
+        patch("metaculus_bot.research.gemini_search.asyncio.sleep", new=AsyncMock()),
+    ):
+        from metaculus_bot.research.gemini_search import invoke_gemini_grounded
+
+        out = await invoke_gemini_grounded("prompt")
+
+    assert out == "fallback body"
+    # 3 primary attempts (all 503), then 1 fallback attempt.
+    assert calls == ["gemini-3-flash-preview"] * 3 + ["gemini-2.5-flash"]
+
+
+@pytest.mark.asyncio
+async def test_fallback_503_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If the fallback model also 503s, the error propagates (callers soft-fail)."""
+    monkeypatch.setenv("GOOGLE_API_KEY", "fake-key")
+    monkeypatch.delenv("GEMINI_SEARCH_MODEL", raising=False)
+
+    def handler(**kwargs):
+        raise _throttle_503()
+
+    fake_client = _make_dispatching_client(handler)
+
+    with (
+        patch("metaculus_bot.research.gemini_search.genai.Client", return_value=fake_client),
+        patch("metaculus_bot.research.gemini_search.asyncio.sleep", new=AsyncMock()),
+    ):
+        from metaculus_bot.research.gemini_search import invoke_gemini_grounded
+
+        with pytest.raises(Exception, match="503"):
+            await invoke_gemini_grounded("prompt")
+
+    # 3 primary attempts + 1 fallback attempt, then give up.
+    assert fake_client.aio.models.generate_content.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_non_503_error_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-throttle error propagates immediately without retry or fallback."""
+    monkeypatch.setenv("GOOGLE_API_KEY", "fake-key")
+    monkeypatch.delenv("GEMINI_SEARCH_MODEL", raising=False)
+
+    fake_client = _make_dispatching_client(ValueError("boom"))
+
+    with (
+        patch("metaculus_bot.research.gemini_search.genai.Client", return_value=fake_client),
+        patch("metaculus_bot.research.gemini_search.asyncio.sleep", new=AsyncMock()) as sleep_mock,
+    ):
+        from metaculus_bot.research.gemini_search import invoke_gemini_grounded
+
+        with pytest.raises(ValueError, match="boom"):
+            await invoke_gemini_grounded("prompt")
+
+    assert fake_client.aio.models.generate_content.await_count == 1
+    assert sleep_mock.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_budget_exhaustion_stops_retrying(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the wall-clock budget is spent, retrying stops before max_attempts."""
+    monkeypatch.setenv("GOOGLE_API_KEY", "fake-key")
+    monkeypatch.delenv("GEMINI_SEARCH_MODEL", raising=False)
+    # Zero the primary budget AND disable the fallback so we isolate the budget gate.
+    monkeypatch.setattr("metaculus_bot.research.gemini_search.GEMINI_SEARCH_TOTAL_BUDGET", 0)
+    monkeypatch.setattr("metaculus_bot.research.gemini_search.GEMINI_SEARCH_FALLBACK_MODEL", "")
+
+    def handler(**kwargs):
+        raise _throttle_503()
+
+    fake_client = _make_dispatching_client(handler)
+
+    with (
+        patch("metaculus_bot.research.gemini_search.genai.Client", return_value=fake_client),
+        patch("metaculus_bot.research.gemini_search.asyncio.sleep", new=AsyncMock()),
+    ):
+        from metaculus_bot.research.gemini_search import invoke_gemini_grounded
+
+        with pytest.raises(Exception, match="budget|503"):
+            await invoke_gemini_grounded("prompt")
+
+    # Budget <= 0 means not even the first attempt runs.
+    assert fake_client.aio.models.generate_content.await_count == 0
+
+
+# ---------------------------------------------------------------------------
 # Parallel provider selection in main.py
 # ---------------------------------------------------------------------------
 

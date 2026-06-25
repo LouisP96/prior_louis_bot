@@ -13,6 +13,8 @@ import asyncio
 import functools
 import logging
 import os
+import random
+import time
 from typing import Any
 
 from forecasting_tools.data_models.questions import MetaculusQuestion
@@ -21,9 +23,11 @@ from google.genai import types as genai_types
 
 from metaculus_bot.constants import (
     GEMINI_SEARCH_DEFAULT_MODEL,
+    GEMINI_SEARCH_FALLBACK_MODEL,
     GEMINI_SEARCH_MAX_CONCURRENCY,
     GEMINI_SEARCH_MODEL_ENV,
     GEMINI_SEARCH_TIMEOUT,
+    GEMINI_SEARCH_TOTAL_BUDGET,
     GOOGLE_API_KEY_ENV,
 )
 from metaculus_bot.prompts import web_research_prompt
@@ -48,6 +52,9 @@ _grounded_semaphore: asyncio.Semaphore | None = None
 # serialize away. Only 503/UNAVAILABLE is retried; other errors propagate.
 _GROUNDED_RETRY_ATTEMPTS = 3
 _GROUNDED_RETRY_BASE_DELAY = 4.0
+# Uniform 0..N seconds added to each backoff so parallel gap-fill searches that
+# 503 in the same wave don't retry in lockstep.
+_GROUNDED_RETRY_JITTER = 2.0
 
 
 def _get_grounded_semaphore() -> asyncio.Semaphore:
@@ -171,6 +178,61 @@ def _format_grounded_response(response: genai_types.GenerateContentResponse) -> 
     return annotated + "\n".join(sources_lines) if len(sources_lines) > _SOURCES_HEADER_LEN else annotated
 
 
+async def _generate_grounded_with_retries(
+    client: genai.Client,
+    model: str,
+    prompt: str,
+    config: genai_types.GenerateContentConfig,
+    semaphore: asyncio.Semaphore,
+    *,
+    deadline: float,
+    max_attempts: int,
+) -> genai_types.GenerateContentResponse:
+    """Run one model's grounded call with 503-retry under a wall-clock deadline.
+
+    Each attempt's timeout is clamped to the remaining budget; retrying stops
+    once the budget (or ``max_attempts``) is spent. Raises ``asyncio.TimeoutError``
+    on a per-attempt timeout, or the last 503 ``ServerError`` when exhausted.
+    Non-503 errors propagate immediately.
+    """
+    last_throttle: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning(f"GeminiSearch: {model} time budget exhausted before attempt {attempt}")
+            break
+        attempt_timeout = min(GEMINI_SEARCH_TIMEOUT, remaining)
+        try:
+            # Hold the concurrency slot only for the in-flight request, not the
+            # backoff sleep, so a throttled call doesn't block a healthy one.
+            async with semaphore:
+                return await asyncio.wait_for(
+                    client.aio.models.generate_content(model=model, contents=prompt, config=config),
+                    timeout=attempt_timeout,
+                )
+        except asyncio.TimeoutError:
+            logger.warning(f"GeminiSearch: {model} timed out after {attempt_timeout:.0f}s")
+            raise
+        except Exception as exc:  # noqa: BLE001 — re-raised below unless a retryable 503
+            if not _is_throttle_503(exc):
+                raise
+            last_throttle = exc
+            if attempt >= max_attempts:
+                break
+            delay = _GROUNDED_RETRY_BASE_DELAY * attempt + random.uniform(0, _GROUNDED_RETRY_JITTER)
+            if time.monotonic() + delay >= deadline:
+                logger.warning(f"GeminiSearch: {model} time budget exhausted; not retrying after attempt {attempt}")
+                break
+            logger.warning(
+                f"GeminiSearch: {model} 503 throttle (attempt {attempt}/{max_attempts}); retrying in {delay:.1f}s"
+            )
+            await asyncio.sleep(delay)
+
+    if last_throttle is not None:
+        raise last_throttle
+    raise asyncio.TimeoutError(f"GeminiSearch: {model} exhausted time budget before any attempt completed")
+
+
 async def invoke_gemini_grounded(
     prompt: str,
     *,
@@ -184,7 +246,9 @@ async def invoke_gemini_grounded(
     so the model can directly read specific URLs (e.g., resolution sources
     named in question fine print).
 
-    Raises on SDK errors — callers decide whether to fail hard or soft.
+    On sustained 503 throttling the primary model retries under a wall-clock
+    budget, then falls back once to GEMINI_SEARCH_FALLBACK_MODEL. Raises on SDK
+    errors — callers decide whether to fail hard or soft.
     """
     client = build_gemini_client()
     model = _resolve_model(model_slug)
@@ -194,34 +258,34 @@ async def invoke_gemini_grounded(
         tools.append({"url_context": {}})
 
     config = genai_types.GenerateContentConfig(tools=tools)
+    semaphore = _get_grounded_semaphore()
 
     logger.info(f"GeminiSearch: calling {model} with grounding")
-    semaphore = _get_grounded_semaphore()
-    response = None
-    for attempt in range(1, _GROUNDED_RETRY_ATTEMPTS + 1):
-        try:
-            # Hold the concurrency slot only for the in-flight request, not the
-            # backoff sleep, so a throttled call doesn't block a healthy one.
-            async with semaphore:
-                response = await asyncio.wait_for(
-                    client.aio.models.generate_content(model=model, contents=prompt, config=config),
-                    timeout=GEMINI_SEARCH_TIMEOUT,
-                )
-            break
-        except asyncio.TimeoutError:
-            logger.warning(f"GeminiSearch: {model} timed out after {GEMINI_SEARCH_TIMEOUT}s")
+    try:
+        response = await _generate_grounded_with_retries(
+            client,
+            model,
+            prompt,
+            config,
+            semaphore,
+            deadline=time.monotonic() + GEMINI_SEARCH_TOTAL_BUDGET,
+            max_attempts=_GROUNDED_RETRY_ATTEMPTS,
+        )
+        served_by = model
+    except Exception as exc:
+        if not (_is_throttle_503(exc) and GEMINI_SEARCH_FALLBACK_MODEL and model != GEMINI_SEARCH_FALLBACK_MODEL):
             raise
-        except Exception as exc:  # noqa: BLE001 — re-raised below unless retryable 503
-            if _is_throttle_503(exc) and attempt < _GROUNDED_RETRY_ATTEMPTS:
-                delay = _GROUNDED_RETRY_BASE_DELAY * attempt
-                logger.warning(
-                    f"GeminiSearch: {model} 503 throttle (attempt {attempt}/{_GROUNDED_RETRY_ATTEMPTS}); "
-                    f"retrying in {delay:.0f}s"
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise
-    assert response is not None  # loop either breaks with a response or raises
+        logger.warning(f"GeminiSearch: {model} exhausted 503 retries; falling back to {GEMINI_SEARCH_FALLBACK_MODEL}")
+        response = await _generate_grounded_with_retries(
+            client,
+            GEMINI_SEARCH_FALLBACK_MODEL,
+            prompt,
+            config,
+            semaphore,
+            deadline=time.monotonic() + GEMINI_SEARCH_TIMEOUT,
+            max_attempts=1,
+        )
+        served_by = GEMINI_SEARCH_FALLBACK_MODEL
 
     formatted = _format_grounded_response(response)
     n_chunks = 0
@@ -230,7 +294,7 @@ async def invoke_gemini_grounded(
         metadata = candidates[0].grounding_metadata
         if metadata is not None and metadata.grounding_chunks:
             n_chunks = len(metadata.grounding_chunks)
-    logger.info(f"GeminiSearch: got {len(formatted)} chars, {n_chunks} grounding chunks from {model}")
+    logger.info(f"GeminiSearch: got {len(formatted)} chars, {n_chunks} grounding chunks from {served_by}")
     return formatted
 
 

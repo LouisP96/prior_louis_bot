@@ -341,6 +341,15 @@ GEMINI_SEARCH_TIMEOUT: int = 360
 # gap-fill runs in waves instead of one throttled burst. 2 is comfortably under
 # the observed throttle threshold; raise if the tier's quota increases.
 GEMINI_SEARCH_MAX_CONCURRENCY: int = 2
+# Wall-clock ceiling for a single grounded call including all 503 retries and
+# backoff. Each attempt's timeout is clamped to the remaining allowance, and
+# retrying stops once the budget is spent. Bounds the retry tail so a sustained
+# 503 spike can't run the naive 3 x GEMINI_SEARCH_TIMEOUT worst case.
+GEMINI_SEARCH_TOTAL_BUDGET: int = 420
+# GA (non-preview) model tried once if the primary model exhausts its 503
+# retries. Preview models are the ones Google capacity-throttles. Empty string
+# disables the fallback.
+GEMINI_SEARCH_FALLBACK_MODEL: str = "gemini-2.5-flash"
 
 # --- Second-pass gap-fill ---
 # After first-pass research completes, a cheap analyzer identifies up to
